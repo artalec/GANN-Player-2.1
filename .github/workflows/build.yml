@@ -1,0 +1,111 @@
+name: Build DJPlayer
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Check project layout
+        run: |
+          set -euo pipefail
+          test -f Package.swift || { echo "::error::Package.swift не найден в корне репозитория"; exit 1; }
+          test -d Sources || { echo "::error::Папка Sources не найдена в корне репозитория"; exit 1; }
+          ls -la
+          ls -la Sources
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Assemble .app bundle
+        run: |
+          set -euo pipefail
+          BIN_DIR="$(swift build -c release --show-bin-path)"
+          BIN="$BIN_DIR/DJPlayer"
+          test -f "$BIN" || { echo "::error::Бинарник $BIN не найден"; exit 1; }
+
+          APP="GANN Player.app"
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN" "$APP/Contents/MacOS/DJPlayer"
+          chmod +x "$APP/Contents/MacOS/DJPlayer"
+          printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+          # Иконка приложения (Resources/AppIcon.icns в репозитории).
+          if [ -f Resources/AppIcon.icns ]; then
+            cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          else
+            echo "::warning::Resources/AppIcon.icns не найден — приложение будет без иконки"
+          fi
+
+          # Info.plist собирается здесь. CFBundleExecutable должен совпадать
+          # с именем бинарника (DJPlayer), а CFBundleName/DisplayName задают
+          # видимое имя в Finder, Dock и строке меню.
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+              <key>CFBundleExecutable</key>
+              <string>DJPlayer</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.example.djplayer</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>GANN Player</string>
+              <key>CFBundleDisplayName</key>
+              <string>GANN Player</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>13.0</string>
+              <key>LSApplicationCategoryType</key>
+              <string>public.app-category.music</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSPrincipalClass</key>
+              <string>NSApplication</string>
+          </dict>
+          </plist>
+          PLIST
+
+          plutil -lint "$APP/Contents/Info.plist"
+
+          codesign --force --deep --sign - "$APP" || echo "::warning::codesign не выполнен"
+
+          ls -laR "$APP/Contents" | head -50
+
+      - name: Archive .app
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent "GANN Player.app" "GANN Player.app.zip"
+          ls -lh "GANN Player.app.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GANN-Player-macOS
+          path: GANN Player.app.zip
+          retention-days: 30
